@@ -4,7 +4,15 @@
 pragma solidity ^0.8.0;
 
 interface IStaker {
-    function initialize(address _stakingToken,address _rewardsToken) external;
+    function initialize(
+        address _creator,
+        address _stakingToken,
+        address _rewardsToken,
+        address _rlink,
+        uint _incentiveRate,
+        uint _parentRate,
+        uint _grandpaRate
+    ) external;
 
     function factory() external view returns(address);
 
@@ -28,15 +36,7 @@ interface IStaker {
 
     function availableReserve() external view returns(uint256);
 
-    function refreshReserve(uint oldBalance) external;
-    
-    function setDistributeAgent(address agent) external;
-    
-    function setRefRates(uint256 _incentiveRate,uint256 _parentRate,uint256 _grandpaRate) external;
-
     function notifyRewardAmount(uint256 _reward,uint256 _rewardsDuration) external;
-
-    function takeExcessReserve(address to) external;
 
     /* ========== EVENTS ========== */
 
