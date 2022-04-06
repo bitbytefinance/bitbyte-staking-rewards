@@ -14,17 +14,11 @@ contract StakerFactory {
     using SafeERC20 for IERC20;
 
     mapping(address => mapping(address => address)) public stakers;
-    mapping(address => StakerInfo) public stakerInfos;
     address[] public tokenStakers;
     address[] public lpStakers;
 
     address public immutable rlinkRelation;
     address public immutable swapFactory;
-
-    struct StakerInfo {
-        uint256 specialFeeRate;        
-        bool isSpecialFee;
-    }
 
     event StakerCreated(address indexed creator,address indexed stakingToken,address indexed rewardsToken,address staker);
     event CreatorChanged(address indexed oldCreator,address newCreator);
