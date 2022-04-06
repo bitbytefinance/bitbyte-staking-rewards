@@ -30,10 +30,11 @@ contract Staker is ReentrancyGuard,IStaker {
     uint256 private _totalSupply;
     mapping(address => uint256) private _balances;
 
+    address public override creator;
     address public immutable override factory;
     uint256 public immutable override createTime;
+    address public rlink;
 
-    address public distributeAgent;
     uint256 public incentiveRate;
     uint256 public parentRate;
     uint256 public grandpaRate;
@@ -46,8 +47,8 @@ contract Staker is ReentrancyGuard,IStaker {
 
     /* ========== MODIFIERS ========== */
 
-    modifier onlyFactory {
-        require(msg.sender == factory,"forbidden");
+    modifier onlyCreator {
+        require(msg.sender == creator,"forbidden");
         _;
     }
 
@@ -62,21 +63,28 @@ contract Staker is ReentrancyGuard,IStaker {
     }
 
     constructor() {
+        require(Address.isContract(msg.sender),"staker can only create by staker factory");
         factory = msg.sender;
         createTime = block.timestamp;
     }
 
     function initialize(
+        address _creator,
         address _stakingToken,
-        address _rewardsToken
+        address _rewardsToken,
+        address _rlink,
+        uint _incentiveRate,
+        uint _parentRate,
+        uint _grandpaRate
     ) external override {
-        require(msg.sender == factory, 'forbidden'); // sufficient check
+        require(msg.sender == factory, 'forbidden');
+        require(_incentiveRate.add(_parentRate).add(_grandpaRate) <= 1e18,"sum of rates can not greater than 1e18");
+        require(_creator != address(0),"creator can not be address 0");
+        
+        creator = _creator;
         stakingToken = IERC20(_stakingToken);
         rewardsToken = IERC20(_rewardsToken);
-    }
-    
-    function creator() external view override returns(address){
-        return IStakerFactory(factory).getStakerCreator(address(this));
+        rlink = _rlink;        
     }
 
     function getStakingToken() external view override returns(address){
@@ -100,7 +108,7 @@ contract Staker is ReentrancyGuard,IStaker {
     }
 
     function rewardPerToken(uint256 toBlock) public view returns (uint256) {
-        require(toBlock >= lastUpdateBlock,"toBlock must bigger than lastUpdateBlock");
+        require(toBlock >= lastUpdateBlock,"toBlock must greater than lastUpdateBlock");
         if (_totalSupply == 0) {
             return rewardPerTokenStored;
         }
@@ -163,11 +171,12 @@ contract Staker is ReentrancyGuard,IStaker {
         uint sendedReward = 0;
         if (reward > 0) {
             rewards[msg.sender] = 0;
-            if(distributeAgent == address(0)){
+            if(rlink == address(0)){
                 rewardsToken.safeTransfer(msg.sender, reward);
                 sendedReward = reward;
             }else{
-                sendedReward = IRlinkCore(distributeAgent).distribute(
+                rewardsToken.safeApprove(rlink,reward);
+                sendedReward = IRlinkCore(rlink).distribute(
                     address(rewardsToken),
                     msg.sender, 
                     reward,
@@ -207,7 +216,7 @@ contract Staker is ReentrancyGuard,IStaker {
     }
 
     /* ========== RESTRICTED FUNCTIONS ========== */
-    function notifyRewardAmount(uint256 _reward,uint256 _rewardsDuration) external override onlyFactory updateReward(address(0)) {
+    function notifyRewardAmount(uint256 _reward,uint256 _rewardsDuration) external override nonReentrant onlyCreator updateReward(address(0)) {
         require(_reward > 0,"reward can not be 0");
         require(_rewardsDuration > 0,"rewards duration can not be 0");
         require(_reward.div(_rewardsDuration) > 0,"provided reward too low");
@@ -215,7 +224,14 @@ contract Staker is ReentrancyGuard,IStaker {
         _updateUnusedReserve();
 
         uint availableReserve_ = availableReserve();
-        require(_reward <= availableReserve_,"insufficient available rewards reserve");        
+        if(availableReserve_ < _reward){
+            uint oldBalance = rewardsToken.balanceOf(address(this));
+            rewardsToken.safeTransferFrom(msg.sender, address(this), _reward - availableReserve_);
+            uint received = rewardsToken.balanceOf(address(this)).sub(oldBalance);
+            availableReserve_ = availableReserve_.add(received);
+            totalReserve = totalReserve.add(received);
+        }
+        require(_reward <= availableReserve_,"insufficient received token");
 
         expendedReserve = expendedReserve.add(pendingExpend());
         rewardRate = _reward.div(_rewardsDuration);
@@ -242,56 +258,5 @@ contract Staker is ReentrancyGuard,IStaker {
             notStakeBlock_ = block.number;
         }
         noStakeBlock = notStakeBlock_;
-    }
-
-    function refreshReserve(uint oldBalance) external override onlyFactory {
-        uint balance = rewardsToken.balanceOf(address(this));
-        require(balance > oldBalance,"no received rewards token");
-        totalReserve = totalReserve.add(balance - oldBalance);
-        emit RewardReserveAdded(msg.sender, balance - oldBalance);
-    }
-
-    function setDistributeAgent(address _newDistributeAgent) external override onlyFactory {
-        address oldAgent = distributeAgent;
-        distributeAgent = _newDistributeAgent;
-        if(_newDistributeAgent != address(0)){
-            rewardsToken.safeApprove(_newDistributeAgent,type(uint256).max);
-        }        
-
-        emit DistributeAgentChanged(msg.sender,oldAgent,_newDistributeAgent);
-    }
-
-    function setRefRates(uint256 _incentiveRate,uint256 _parentRate,uint256 _grandpaRate) external override onlyFactory {
-        require(_incentiveRate.add(_parentRate).add(_grandpaRate) <= 1e18,"sum of rates must less than or equal to 1e18");
-        incentiveRate = _incentiveRate;
-        parentRate = _parentRate;
-        grandpaRate = _grandpaRate;
-        
-        emit RefRatesChanged(msg.sender, _incentiveRate, _parentRate, _grandpaRate);
-    }
-
-    function takeExcessReserve(address to) external override onlyFactory updateReward(address(0)) {
-        require(to != address(0),"to can not be address 0");
-        _updateUnusedReserve();
-
-        uint availableReserve_ = availableReserve();
-        expendedReserve = expendedReserve.add(pendingExpend());
-
-        _takeToken(address(rewardsToken), to, availableReserve_);
-        totalReserve = totalReserve.sub(availableReserve_);
-        //require(totalReserve.add(unusedReserve).sub(expendedReserve) == availableReserve_,"calc available reserve error");
-        rewardRate = 0;
-        
-        lastUpdateBlock = block.number;
-        periodFinish = block.number.add(1);
-        rewardsDuration = 1;
-        periodStart = block.number;        
-    }
-
-    function _takeToken(address token,address to, uint256 amount) internal {
-        require(to != address(0),"to can not be address 0");
-        IERC20(token).safeTransfer(to,amount);
-
-        emit TakedToken(token,to,amount);
     }
 }
